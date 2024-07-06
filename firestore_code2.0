@@ -1,0 +1,21 @@
+from google.cloud import firestore
+from datetime import datetime
+import random
+
+def generate_machine_data(request):
+  # Initialize the Firestore client with your project ID and the desired database
+  db = firestore.Client(project='your-project-id', database='machine-data1595')
+
+  machines = ['machine1', 'machine2', 'machine3', 'machine4', 'machine5', 'machine6', 'machine7', 'machine8', 'machine9', 'machine10']
+   
+  for machine in machines:
+    data = {
+      'machine': machine,
+      'timestamp': datetime.now(),
+      'temperature': random.uniform(20, 30),
+      'pressure': random.uniform(800, 1000),
+      'humidity': random.uniform(40, 60),
+    }
+    db.collection('machine_data').add(data)
+
+  return 'Data generated and stored successfully!'
