@@ -1,0 +1,75 @@
+from google.cloud import firestore, storage, bigquery
+import json
+from datetime import datetime
+
+# Custom JSON encoder to handle DatetimeWithNanoseconds
+class JSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return json.JSONEncoder.default(self, obj)
+
+def transfer_data(event, context):
+    # Firestore client
+    db = firestore.Client()
+    
+    # Cloud Storage client
+    storage_client = storage.Client()
+    
+    # BigQuery client
+    bigquery_client = bigquery.Client()
+    
+    # Firestore collection to transfer
+    collection_name = 'machine_data'
+    
+    # Cloud Storage bucket and file
+    bucket_name = 'machine-data1595'
+    file_name = 'data.json'
+    
+    # BigQuery dataset and table
+    dataset_id = 'machinedata1595'  # Just the dataset ID
+    table_id = 'machine'  # Just the table ID
+    
+    # Get Firestore data
+    docs = db.collection(collection_name).stream()
+    data = []
+    for doc in docs:
+        doc_dict = doc.to_dict()
+        # Convert all datetime fields to ISO format
+        for key, value in doc_dict.items():
+            if isinstance(value, datetime):
+                doc_dict[key] = value.isoformat()
+        data.append(doc_dict)
+    
+    # Save data to Cloud Storage
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(file_name)
+    
+    # Write each JSON object on a new line
+    json_lines = "\n".join(json.dumps(record, cls=JSONEncoder) for record in data)
+    blob.upload_from_string(data=json_lines, content_type='application/json')
+    
+    # Load data into BigQuery
+    table_ref = bigquery_client.dataset(dataset_id).table(table_id)
+    job_config = bigquery.LoadJobConfig(
+        schema=[
+            bigquery.SchemaField('humidity', 'FLOAT'),
+            bigquery.SchemaField('machine', 'STRING'),
+            bigquery.SchemaField('pressure', 'FLOAT'),
+            bigquery.SchemaField('temperature', 'FLOAT'),
+            bigquery.SchemaField('timestamp', 'TIMESTAMP')
+        ],
+        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+    )
+    
+    uri = f'gs://{bucket_name}/{file_name}'
+    load_job = bigquery_client.load_table_from_uri(
+        uri,
+        table_ref,
+        job_config=job_config,
+    )
+    
+    load_job.result()  # Wait for the job to complete
+    
+    print(f'Loaded {load_job.output_rows} rows into {dataset_id}.{table_id}')
+
