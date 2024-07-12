@@ -1,7 +1,7 @@
-from google.cloud import firestore, storage, bigquery
 import json
 from datetime import datetime
 import base64
+from google.cloud import firestore, storage, bigquery
 from google.cloud import kms
 
 # Custom JSON encoder for handling datetime objects
@@ -12,11 +12,10 @@ class JSONEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 def transfer_data(event, context):
-    # Firestore, Storage, BigQuery, and KMS clients
+    # Firestore, Storage, and BigQuery clients
     db = firestore.Client()
     storage_client = storage.Client()
     bigquery_client = bigquery.Client()
-    kms_client = kms.KeyManagementServiceClient()
 
     # Configuration
     collection_name = 'machine_data'
@@ -41,9 +40,10 @@ def transfer_data(event, context):
     for doc in docs:
         doc_dict = doc.to_dict()
         for key, value in doc_dict.items():
-            if isinstance(value, datetime):
+            if key == 'humidity':
+                doc_dict[key] = encrypt_value(value)
+            elif isinstance(value, datetime):
                 doc_dict[key] = value.isoformat()
-        doc_dict['timestamp'] = encrypt_value(doc_dict['timestamp'])
         data.append(doc_dict)
 
     # Upload data to Cloud Storage
@@ -56,10 +56,10 @@ def transfer_data(event, context):
     table_ref = bigquery_client.dataset(dataset_id).table(table_id)
     job_config = bigquery.LoadJobConfig(
         schema=[
-            bigquery.SchemaField('humidity', 'FLOAT'),
+            bigquery.SchemaField('humidity', 'STRING'),  # Encrypted humidity
             bigquery.SchemaField('machine', 'STRING'),
             bigquery.SchemaField('pressure', 'FLOAT'),
-            bigquery.SchemaField('temperature', 'STRING'),  
+            bigquery.SchemaField('temperature', 'FLOAT'),
             bigquery.SchemaField('timestamp', 'TIMESTAMP')
         ],
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
