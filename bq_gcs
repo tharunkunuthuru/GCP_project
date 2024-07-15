@@ -8,7 +8,7 @@ PROJECT_ID = 'fleet-geode-425017-g6'
 DATASET_ID = 'machine112'
 TABLE_ID = 'machinedata'
 BUCKET_NAME = 'processed_data1595'
-TIMESTAMP_COLUMN = 'timestamp'  # Replace with your actual timestamp column name if not partitioned
+
 
 def bigquery_to_gcs(request):
     try:
