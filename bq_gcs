@@ -1,0 +1,80 @@
+from google.cloud import bigquery, storage
+import json
+import os
+import logging
+import pandas as pd 
+
+PROJECT_ID = 'fleet-geode-425017-g6'  
+DATASET_ID = 'machine112'
+TABLE_ID = 'machinedata'
+BUCKET_NAME = 'processed_data1595'
+TIMESTAMP_COLUMN = 'timestamp'  # Replace with your actual timestamp column name if not partitioned
+
+def bigquery_to_gcs(request):
+    try:
+        bigquery_client = bigquery.Client(project=PROJECT_ID)
+        table_ref = bigquery_client.dataset(DATASET_ID).table(TABLE_ID)
+        table = bigquery_client.get_table(table_ref)
+
+        is_partitioned = table.time_partitioning is not None 
+
+        if is_partitioned:
+            # Dynamically get the latest partition's timestamp
+            query = f"""
+                SELECT MAX(_PARTITIONTIME) AS latest_partition_time
+                FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`
+            """
+        else:
+            # If not partitioned, just fetch the latest data based on a timestamp column
+            query = f"""
+                SELECT MAX({TIMESTAMP_COLUMN}) AS latest_timestamp
+                FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`
+            """
+
+        query_job = bigquery_client.query(query)
+        latest_info = query_job.result().to_dataframe() 
+
+        if latest_info.empty or latest_info.iloc[0, 0] is None:
+            return 'No data in table yet', 200
+        
+        if is_partitioned:
+            latest_partition_time = latest_info['latest_partition_time'][0]
+            query = f"""
+                SELECT *
+                FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`
+                WHERE _PARTITIONTIME = TIMESTAMP('{latest_partition_time}')
+            """
+        else:
+            latest_timestamp = latest_info['latest_timestamp'][0]
+            query = f"""
+                SELECT *
+                FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`
+                WHERE {TIMESTAMP_COLUMN} >= TIMESTAMP('{latest_timestamp}')
+            """
+        query_job = bigquery_client.query(query)
+        rows = query_job.result()
+
+        storage_client = storage.Client(project=PROJECT_ID)
+        bucket = storage_client.bucket(BUCKET_NAME)
+
+        machine_data = {}  
+        for row in rows:
+            machine_id = row.get('machine_id')
+            if machine_id is None:
+                continue
+            if machine_id not in machine_data:
+                machine_data[machine_id] = []
+            machine_data[machine_id].append(row) 
+
+        field_names = ['Humidity', 'machine_id', 'pressure', 'temperature', 'timestamp']
+        for machine_id, data in machine_data.items():
+            csv_data = ','.join(field_names) + '\n'  # Add field names as the first row
+            csv_data += '\n'.join([','.join([str(row[field]) for field in field_names]) for row in data])
+            blob = bucket.blob(f"machine_{machine_id}_data.csv")
+            blob.upload_from_string(csv_data, content_type='text/csv')
+
+        return f"Data transferred for machines: {', '.join(machine_data.keys())}", 200
+
+    except Exception as e:
+        logging.exception("An error occurred:")
+        return f"Error: {str(e)}", 500 
