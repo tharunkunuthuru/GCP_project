@@ -1,0 +1,82 @@
+from google.cloud import bigquery, storage
+import json
+import os
+import logging
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+
+PROJECT_ID = 'bold-camera-429007-i5' 
+DATASET_ID = 'machinedata1595'
+TABLE_ID = 'filtered_data'
+BUCKET_NAME = 'processed_data112'
+TIMESTAMP_COLUMN = 'timestamp' 
+
+def bigquery_to_gcs(request):
+    try:
+        bigquery_client = bigquery.Client(project=PROJECT_ID)
+        table_ref = bigquery_client.dataset(DATASET_ID).table(TABLE_ID)
+        table = bigquery_client.get_table(table_ref)
+
+        machine_ids_query = f"""
+            SELECT DISTINCT machine_id
+            FROM {PROJECT_ID}.{DATASET_ID}.{TABLE_ID}
+        """
+        machine_ids_job = bigquery_client.query(machine_ids_query)
+        machine_ids = [row['machine_id'] for row in machine_ids_job.result()]
+
+        storage_client = storage.Client(project=PROJECT_ID)
+        bucket = storage_client.bucket(BUCKET_NAME)
+
+        field_names = ['machine_id', 'humidity', 'pressure', 'temperature', 'timestamp']
+        machine_data = {}
+
+        for machine_id in machine_ids:
+            # Fetch up to 1000 records for each machine
+            query = f"""
+                SELECT *
+                FROM {PROJECT_ID}.{DATASET_ID}.{TABLE_ID}
+                WHERE machine_id = '{machine_id}'
+                LIMIT 1000
+            """
+            query_job = bigquery_client.query(query)
+            rows = query_job.result()
+
+            machine_data[machine_id] = [row for row in rows]
+
+        for machine_id, data in machine_data.items():
+            csv_data = ','.join(field_names) + '\n' 
+            csv_data += '\n'.join([','.join([str(row[field]) for field in field_names]) for row in data])
+            blob = bucket.blob(f"machine_{machine_id}_data.csv")
+            blob.upload_from_string(csv_data, content_type='text/csv')
+
+            # Send email with the CSV file attached
+            subject = f"Data for Machine {machine_id}"
+            body = f"Please find attached the data for Machine {machine_id}."
+            recipient = 'kunuthurutharun@gmail.com'  
+
+            message = MIMEMultipart()
+            message['Subject'] = subject
+            message['From'] = 'tharun.kunuthuru@gmail.com' 
+            message['To'] = recipient
+
+            message.attach(MIMEText(body, 'plain'))
+
+            attachment = MIMEBase('application', 'octet-stream')
+            attachment.set_payload(csv_data)
+            encoders.encode_base64(attachment)
+            attachment.add_header('Content-Disposition', 'attachment', filename=f'machine_{machine_id}_data.csv')
+            message.attach(attachment) 
+
+            with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                server.starttls()
+                server.login('tharun.kunuthuru@gmail.com', 'kycthnsopvgjltfz')  
+                server.sendmail(message['From'], message['To'], message.as_string())
+
+        return f"Data transferred for machines: {', '.join(machine_data.keys())}", 200
+    
+    except Exception as e:
+        logging.exception("An error occurred:")
+        return f"Error: {str(e)}", 500
